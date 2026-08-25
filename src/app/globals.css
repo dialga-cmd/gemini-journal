@@ -1,26 +1,198 @@
 @import "tailwindcss";
 
+/* ============================================================
+   LAMPLIGHT — design tokens (philosophy: docs/design-philosophy.md)
+
+   Laws encoded here:
+   - Dark is the primary expression; light follows the OS setting.
+     Both modes share one neutral temperature (violet-warm) and the
+     same two accents: apricot invites action, violet marks structure
+     (focus, selection, the user's own voice).
+   - No pure black, no pure white anywhere.
+   - Radius law: pills where a hand presses, soft planes for content,
+     message forms tuck exactly one corner toward their speaker.
+   - Motion is flame behavior: brief arrival cascades, then stillness.
+     Only transform and opacity are animated.
+   ============================================================ */
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #141119;
+  --surface: #1b1723;
+  --surface-2: #252031;
+  --line: #2f2939;
+  --ink: #f2eee7;
+  --ink-muted: #a99fb6;
+
+  --accent: #eaae87;
+  --accent-hover: #f3bf9e;
+  --accent-ink: #231108;
+
+  --user: #6952c7;
+  --violet: #7c61d4;
+  --danger: #ff6b70;
+  --danger-bg: rgba(255, 107, 112, 0.08);
+
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    /* Warm paper is a deliberate brand choice inherited from the Vibrant
+       system's own tokens (its text color IS warm espresso), not the
+       generic beige+brass marketing default. */
+    --background: #faf8f4;
+    --surface: #ffffff;
+    --surface-2: #f1ece3;
+    --line: #e5ded3;
+    --ink: #262019;
+    --ink-muted: #6e6577;
+
+    --accent: #d9854e;
+    --accent-hover: #cd7840;
+
+    --user: #5b45ae;
+    --danger: #c73a3f;
+    --danger-bg: rgba(199, 58, 63, 0.07);
+  }
 }
 
 @theme inline {
   --color-background: var(--background);
-  --color-foreground: var(--foreground);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-line: var(--line);
+  --color-ink: var(--ink);
+  --color-ink-muted: var(--ink-muted);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-ink: var(--accent-ink);
+  --color-user: var(--user);
+  --color-violet: var(--violet);
+  --color-danger: var(--danger);
   --font-sans: var(--font-geist-sans);
+  --font-display: var(--font-outfit);
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html {
+  color-scheme: light dark;
 }
 
 body {
   background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  color: var(--ink);
+}
+
+/* Kill double-tap zoom delay and the gray tap flash on presses. */
+button,
+a,
+textarea {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+::selection {
+  background: color-mix(in oklab, var(--violet) 40%, transparent);
+}
+
+*:focus-visible {
+  outline: 2px solid var(--violet);
+  outline-offset: 2px;
+}
+
+/* Exception: fields inside a compound control (the journal composer) skip
+   the personal outline. Their wrapper carries the focus indicator instead
+   via :focus-within border color, so nothing double-frames. */
+textarea:focus-visible,
+input:focus-visible {
+  outline: none;
+}
+
+/* Slim, quiet scrollbars that belong to the room. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 999px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Flame-behavior motion: arrive, settle, hold. All gated behind
+   no-preference so reduced-motion users get instant, steady UI.
+   Only compositor-friendly properties are animated. */
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes rise-in {
+    from {
+      opacity: 0;
+      transform: translateY(10px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  .rise-in {
+    animation: rise-in 0.45s cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  @keyframes flicker {
+    0%,
+    100% {
+      opacity: 0.25;
+    }
+    50% {
+      opacity: 0.95;
+    }
+  }
+  .thinking-dot {
+    animation: flicker 1.1s ease-in-out infinite;
+  }
+  .thinking-dot:nth-child(2) {
+    animation-delay: 0.18s;
+  }
+  .thinking-dot:nth-child(3) {
+    animation-delay: 0.36s;
+  }
+
+  /* A light band sweeping across its overflow-hidden parent. */
+  @keyframes sheen-slide {
+    from {
+      transform: translateX(-120%);
+    }
+    to {
+      transform: translateX(280%);
+    }
+  }
+  .sheen {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 35%;
+    background-image: linear-gradient(
+      90deg,
+      transparent,
+      color-mix(in oklab, var(--ink) 12%, transparent),
+      transparent
+    );
+    animation: sheen-slide 1.6s ease-in-out infinite;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

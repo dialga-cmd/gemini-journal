@@ -13,13 +13,27 @@ security posture that isn't a prototype.
    `users/{uid}/…`. Firestore rules are deny-by-default and grant access only
    where `request.auth.uid == uid` ([firestore.rules](./firestore.rules)).
    Zero cross-user reads or writes are expressible.
-4. **The Gemini API key lives in Google Cloud Secret Manager** and is fetched
-   at runtime by the server (cached in memory). It is never hardcoded,
-   committed, or shipped to the client bundle.
+4. **Secrets are server-only.** The Gemini API key and the Firebase Admin
+   service-account path are loaded from a gitignored `.env.local` via
+   `process.env`, read exclusively inside server-side code. Neither value is
+   hardcoded, committed, logged, or shipped in the client bundle — and
+   neither ever appears in a `NEXT_PUBLIC_*` variable.
 
 Extra rule that makes #3 hold end-to-end: **the Admin SDK bypasses Firestore
 rules**, so the server re-enforces isolation in code — the uid used for every
 query comes from the *verified* ID token, never from a request body.
+
+Full engineering rules: [SECURITY_CONSTITUTION.md](./SECURITY_CONSTITUTION.md).
+
+### Secrets tradeoff (deliberate, not an oversight)
+
+This project stores secrets in gitignored server-only env vars instead of
+Google Cloud Secret Manager because the GCP project has no billing account
+attached (Secret Manager requires one even for its free allotment). The
+tradeoff we accept for the hackathon: no centralized rotation and no access
+audit logs. **Production upgrade path:** move the two values into Secret
+Manager and swap the loader module ([src/lib/gemini.server.ts](./src/lib/gemini.server.ts))
+to fetch at runtime — call sites don't change.
 
 ## Architecture
 
@@ -31,8 +45,8 @@ Browser (Next.js client components)
       ↓
 Server (route handler)
  ├─ verifyIdToken()             → uid (identity source of truth)
- ├─ Secret Manager (cached)     → Gemini API key
- ├─ Gemini multi-turn call      → reply text + rolling summary
+ ├─ process.env (server-only)   → Gemini API key
+ ├─ Gemini multi-turn call      → reply text (+ rolling summary later)
  └─ Admin SDK writes            → users/{uid}/sessions/{sid}/messages/*
 ```
 
@@ -46,31 +60,23 @@ users/{uid}/sessions/{sid}/messages/{id} role ('user' | 'model'), text, createdA
 
 ## Setup
 
-1. **Firebase console**: create a project, enable Auth (Google provider) and
-   Firestore. Register a web app and copy its config into `.env.local`.
-2. **Local env**: `cp .env.local.example .env.local` and fill in the values.
-3. **Service account** (for `firebase-admin` locally): create one with
-   *Firebase Admin SDK* access, save the JSON under `secrets/` (gitignored),
-   and point `GOOGLE_APPLICATION_CREDENTIALS` at it. On deployed infra,
-   Application Default Credentials handle this.
-4. **Gemini key in Secret Manager** (requires billing enabled on the GCP
-   project — usage stays inside the free allotment):
-
-```bash
-gcloud services enable secretmanager.googleapis.com
-printf '%s' 'YOUR_GEMINI_API_KEY' | gcloud secrets create gemini-api-key --data-file=-
-gcloud secrets add-iam-policy-binding gemini-api-key \
-  --member="serviceAccount:APP-SA@PROJECT.iam.gserviceaccount.com" \
-  --role="roles/secretmanager.secretAccessor"
-```
-
-5. **Deploy rules**: `npx firebase deploy --only firestore:rules`
-   (or test locally first with the emulator suite).
-6. **Run**: `npm run dev`
+1. **Firebase console**: enable Auth (Google provider) and Firestore.
+2. **Local env**: `cp .env.local.example .env.local`, then fill in:
+   - the six Firebase web-config values (Project settings → General → Your apps),
+   - download the **service account key** (Project settings → Service accounts
+     → Generate new private key), save it as `service-key.json` in the project
+     root (already gitignored),
+   - your Gemini API key from Google AI Studio.
+3. **Deploy rules** (required — without them Firestore blocks all clients):
+   `npx firebase deploy --only firestore:rules`
+4. **Run**: `npm run dev` → sign in with Google → journal.
 
 ## Free-tier notes
 
-- `GEMINI_MODEL` defaults to `gemini-2.5-flash-lite` (cheapest); switch to
-  `gemini-2.5-flash` where quality matters. Avoid Pro on the free tier.
+- `GEMINI_MODEL` defaults to `gemini-3.5-flash-lite` (cheapest tier callable
+  by new accounts); switch to `gemini-3.5-flash` where quality matters. Avoid
+  Pro models on the free tier. If a pinned model ever 404s with "no longer
+  available to new users," bump the generation or use the
+  `gemini-flash-lite-latest` alias.
 - The rolling per-session `summary` keeps prompts small so long journals
   stay within free-tier context/rate limits.
