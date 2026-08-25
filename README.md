@@ -25,6 +25,30 @@ query comes from the *verified* ID token, never from a request body.
 
 Full engineering rules: [SECURITY_CONSTITUTION.md](./SECURITY_CONSTITUTION.md).
 
+## Hosting: why this deploys to Vercel, not Cloud Run
+
+Google Cloud Run requires a billing account attached to the project, even to
+use its always-free tier. On this account, billing enrollment fails with
+Google's error **`OR_BACR2_44` ("Billing setup can't be completed")**, and
+Google support could not resolve it. Since a billing account is a hard gate
+for Cloud Run *and* for Secret Manager, the app deploys to **Vercel's free,
+no-card tier**, which hosts the identical Next.js server: route handlers,
+Firebase Admin SDK, and server-only environment secrets behave the same.
+
+This constraint costs nothing structurally, because the architecture was
+built Cloud-Run-portable from day one:
+
+- `src/lib/firebase.admin.ts` resolves credentials in priority order:
+  env-injected JSON (Vercel) → service-account file (local dev) →
+  Application Default Credentials (Cloud Run). Moving hosts is a config
+  change, not a code change.
+- The full `gcloud run deploy --source` flow, including `--set-secrets` for
+  serving the Gemini key from Secret Manager, is documented below and ready
+  to run the day a billing account exists.
+- The Gemini API key stays server-side-only in every mode: never committed,
+  never hardcoded, never shipped in the client bundle, never in a
+  `NEXT_PUBLIC_*` variable.
+
 ### Secrets tradeoff (deliberate, not an oversight)
 
 This project stores secrets in gitignored server-only env vars instead of
@@ -71,7 +95,11 @@ users/{uid}/sessions/{sid}/messages/{id} role ('user' | 'model'), text, createdA
    `npx firebase deploy --only firestore:rules`
 4. **Run**: `npm run dev` → sign in with Google → journal.
 
-## Deploy to Cloud Run
+## Deploy to Cloud Run (production path)
+
+> Ready to run as-is once billing enrollment succeeds. See
+> [Hosting](#hosting-why-this-deploys-to-vercel-not-cloud-run) for why the
+> live deployment is currently on Vercel.
 
 The Gemini key is stored in **Secret Manager** and injected at instance start
 via `--set-secrets` — it never lives in the repo, the image, or the client
