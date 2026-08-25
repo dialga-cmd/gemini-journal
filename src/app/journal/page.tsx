@@ -102,6 +102,17 @@ export default function JournalPage() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages, sending, streamText]);
 
+  // Auto-grow the composer with its content, soft wraps included. Measuring
+  // scrollHeight (not counting "\n") is what makes long unwrapped paragraphs
+  // expand instead of clipping inside a single row. Capped at ~5 rows, then
+  // the box scrolls internally.
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+  }, [input]);
+
   const send = useCallback(async () => {
     const text = input.trim();
     if (!text || sending || !user || text.length > MAX_INPUT_CHARS) return;
@@ -202,6 +213,7 @@ export default function JournalPage() {
     } finally {
       setStreamText(null);
       setSending(false);
+      inputRef.current?.focus(); // ready for the next thought immediately
     }
   }, [input, sending, user]);
 
@@ -339,13 +351,13 @@ export default function JournalPage() {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={onKeyDown}
-              rows={Math.min(4, Math.max(1, input.split("\n").length))}
+              rows={1}
               maxLength={MAX_INPUT_CHARS + 100}
               name="entry"
               autoComplete="off"
               aria-label="Journal entry"
               placeholder="Start writing…"
-              className="max-h-40 flex-1 resize-none bg-transparent py-2.5 text-sm leading-6 text-ink outline-none placeholder:text-ink-muted"
+              className="flex-1 resize-none overflow-y-auto bg-transparent py-2.5 text-sm leading-6 text-ink outline-none placeholder:text-ink-muted"
             />
             <button
               type="submit"
