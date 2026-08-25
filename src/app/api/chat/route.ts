@@ -117,6 +117,17 @@ export async function POST(req: Request): Promise<Response> {
       { role: "user", parts: [{ text }] },
     ];
 
+    // Session metadata is needed BEFORE streaming: the rolling summary feeds
+    // the prompt so long conversations stay coherent within context limits.
+    const sessionDoc = await sessionRef.get();
+    const isNewSession = !sessionDoc.exists;
+    const prevCount = isNewSession ? 0 : Number(sessionDoc.data()?.messageCount ?? 0);
+    const prevSummary = isNewSession ? "" : String(sessionDoc.data()?.summary ?? "");
+
+    const systemInstruction = prevSummary
+      ? `${JOURNAL_SYSTEM_PROMPT}\n\nEarlier in this conversation (auto-summary):\n${prevSummary}`
+      : JOURNAL_SYSTEM_PROMPT;
+
     const ai = geminiClient();
     const encoder = new TextEncoder();
 
@@ -133,7 +144,7 @@ export async function POST(req: Request): Promise<Response> {
             model: geminiModel(),
             contents,
             config: {
-              systemInstruction: JOURNAL_SYSTEM_PROMPT,
+              systemInstruction,
               temperature: 0.8,
               maxOutputTokens: 2048,
             },
@@ -158,9 +169,6 @@ export async function POST(req: Request): Promise<Response> {
 
         if (full.trim() && full.length <= MAX_REPLY_CHARS) {
           try {
-            const sessionDoc = await sessionRef.get();
-            const isNewSession = !sessionDoc.exists;
-
             const batch = adminDb().batch();
             batch.set(messagesRef.doc(), {
               role: "user",
@@ -190,7 +198,8 @@ export async function POST(req: Request): Promise<Response> {
           }
         }
 
-        send({ done: true });
+        // Nudge the client to refresh the rolling summary every 10 messages.
+        send({ done: true, summarize: (prevCount + 2) % 10 === 0 });
         controller.close();
       },
     });
