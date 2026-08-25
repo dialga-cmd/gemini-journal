@@ -162,6 +162,14 @@ input:focus-visible {
     animation-delay: 0.36s;
   }
 
+  /* The blinking apricot caret at the edge of a streaming reply. */
+  .stream-caret::after {
+    content: "▍";
+    margin-left: 1px;
+    color: var(--accent);
+    animation: flicker 0.9s steps(2, start) infinite;
+  }
+
   /* A light band sweeping across its overflow-hidden parent. */
   @keyframes sheen-slide {
     from {
@@ -195,4 +203,110 @@ input:focus-visible {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+/* ============================================================
+   Markdown inside chat bubbles (.md-body), styled with LAMPLIGHT
+   tokens. Rendered by react-markdown: React elements only, no raw
+   HTML passthrough (see src/components/Markdown.tsx).
+   ============================================================ */
+.md-body > :first-child {
+  margin-top: 0;
+}
+.md-body > :last-child {
+  margin-bottom: 0;
+}
+.md-body p {
+  margin: 0.35em 0;
+  line-height: 1.6;
+}
+.md-body h1,
+.md-body h2,
+.md-body h3,
+.md-body h4 {
+  font-family: var(--font-outfit);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 0.7em 0 0.3em;
+  line-height: 1.2;
+}
+.md-body h1 {
+  font-size: 1.2em;
+}
+.md-body h2 {
+  font-size: 1.12em;
+}
+.md-body h3 {
+  font-size: 1.05em;
+}
+.md-body ul,
+.md-body ol {
+  margin: 0.35em 0;
+  padding-left: 1.3em;
+}
+.md-body ul {
+  list-style: disc;
+}
+.md-body ol {
+  list-style: decimal;
+}
+.md-body li {
+  margin: 0.18em 0;
+}
+.md-body li > p {
+  margin: 0;
+}
+.md-body a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.md-body code {
+  font-family: var(--font-geist-mono);
+  font-size: 0.85em;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.08em 0.35em;
+}
+.md-body pre {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 0.75em 1em;
+  overflow-x: auto;
+  margin: 0.5em 0;
+}
+.md-body pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 0.85em;
+}
+.md-body blockquote {
+  border-left: 3px solid var(--line);
+  padding-left: 0.75em;
+  margin: 0.5em 0;
+  color: var(--ink-muted);
+}
+.md-body hr {
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: 0.75em 0;
+}
+.md-body table {
+  border-collapse: collapse;
+  margin: 0.5em 0;
+  font-size: 0.9em;
+  display: block;
+  overflow-x: auto;
+}
+.md-body th,
+.md-body td {
+  border: 1px solid var(--line);
+  padding: 0.3em 0.6em;
+  text-align: left;
+}
+.md-body th {
+  background: var(--surface-2);
 }

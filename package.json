@@ -2,6 +2,12 @@
   "name": "gemini-journal",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=22"
+  },
+  "overrides": {
+    "jose": "^5.9.6"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -17,6 +23,8 @@
     "next": "16.3.2",
     "react": "19.2.8",
     "react-dom": "19.2.8",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
     "server-only": "^0.0.1"
   },
   "devDependencies": {

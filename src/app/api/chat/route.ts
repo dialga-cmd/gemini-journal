@@ -1,4 +1,5 @@
-// POST /api/chat — one authenticated turn of the journaling conversation.
+// POST /api/chat — one authenticated turn of the journaling conversation,
+// streamed token-by-token to the client as NDJSON.
 //
 // Threat model (Article 0):
 //   asset      — users' journal entries; Gemini quota/money
@@ -10,6 +11,17 @@
 //                from the body); every Firestore path derived from that uid;
 //                payload shape + size validation; per-uid rate limit;
 //                generic errors with content-free logs (Articles 3–7)
+//
+// Wire format (application/x-ndjson, one JSON object per line):
+//   {"sid":"…"}        session id, sent immediately
+//   {"t":"delta"}      one streamed text delta from Gemini
+//   {"error":"msg"}    failure (client keeps any partial reply it received)
+//   {"done":true}      terminal marker after persistence
+//
+// Persistence stays all-or-nothing per turn: both messages and the session
+// update commit in one batch AFTER generation finishes. If the stream dies
+// mid-reply, whatever Gemini produced is persisted — the record never shows
+// a user entry without its (possibly partial) assistant reply.
 import { FieldValue } from "firebase-admin/firestore";
 
 import { HttpError, requireUid } from "@/lib/auth.server";
@@ -20,7 +32,7 @@ import { allowRequest } from "@/lib/rate-limit.server";
 // firebase-admin requires Node APIs — never run this route on the edge runtime.
 export const runtime = "nodejs";
 
-// The route verifies a token, reads history, and waits on a Gemini
+// The route verifies a token, reads history, and streams a Gemini
 // generation. Hosted platforms default to ~10s function limits, which a
 // cold start plus model latency can exceed; claim the headroom explicitly.
 export const maxDuration = 60;
@@ -99,54 +111,98 @@ export async function POST(req: Request): Promise<Response> {
       }
     });
 
-    // ---- Multi-turn Gemini call -------------------------------------------
+    // ---- Multi-turn Gemini call, streamed --------------------------------
     const contents = [
       ...history.map((turn) => ({ role: turn.role, parts: [{ text: turn.text }] })),
       { role: "user", parts: [{ text }] },
     ];
 
-    let reply: string;
-    try {
-      const response = await geminiClient().models.generateContent({
-        model: geminiModel(),
-        contents,
-        config: {
-          systemInstruction: JOURNAL_SYSTEM_PROMPT,
-          temperature: 0.8,
-          maxOutputTokens: 2048,
-        },
-      });
-      reply = (response.text ?? "").trim();
-    } catch (err) {
-      // Log the failure reason only — never the prompt or reply content.
-      console.error("gemini.generateContent failed:", err instanceof Error ? err.message : err);
-      return fail(502, "The journaling assistant is unavailable right now. Try again shortly.");
-    }
-    if (!reply || reply.length > MAX_REPLY_CHARS) {
-      return fail(502, "The assistant returned an unusable response. Try rephrasing.");
-    }
+    const ai = geminiClient();
+    const encoder = new TextEncoder();
 
-    // ---- Persist both turns atomically -------------------------------------
-    const sessionDoc = await sessionRef.get();
-    const isNewSession = !sessionDoc.exists;
+    const stream = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        const send = (obj: unknown) =>
+          controller.enqueue(encoder.encode(JSON.stringify(obj) + "\n"));
 
-    const batch = adminDb().batch();
-    batch.set(messagesRef.doc(), { role: "user", text, createdAt: FieldValue.serverTimestamp() });
-    batch.set(messagesRef.doc(), { role: "model", text: reply, createdAt: FieldValue.serverTimestamp() });
-    batch.set(
-      sessionRef,
-      {
-        ...(isNewSession
-          ? { title: text.slice(0, 80), summary: "", createdAt: FieldValue.serverTimestamp() }
-          : {}),
-        updatedAt: FieldValue.serverTimestamp(),
-        messageCount: FieldValue.increment(2),
+        send({ sid });
+        let full = "";
+
+        try {
+          const geminiStream = await ai.models.generateContentStream({
+            model: geminiModel(),
+            contents,
+            config: {
+              systemInstruction: JOURNAL_SYSTEM_PROMPT,
+              temperature: 0.8,
+              maxOutputTokens: 2048,
+            },
+          });
+          for await (const chunk of geminiStream) {
+            const delta = chunk.text;
+            if (delta) {
+              full += delta;
+              send({ t: delta });
+            }
+          }
+        } catch (err) {
+          // Content-free log only (Article 7).
+          console.error("gemini stream failed:", err instanceof Error ? err.message : err);
+          if (!full.trim()) {
+            send({ error: "The journaling assistant is unavailable right now. Try again shortly." });
+            controller.close();
+            return;
+          }
+          send({ error: "The assistant stopped mid-reply. What you see is saved." });
+        }
+
+        if (full.trim() && full.length <= MAX_REPLY_CHARS) {
+          try {
+            const sessionDoc = await sessionRef.get();
+            const isNewSession = !sessionDoc.exists;
+
+            const batch = adminDb().batch();
+            batch.set(messagesRef.doc(), {
+              role: "user",
+              text,
+              createdAt: FieldValue.serverTimestamp(),
+            });
+            batch.set(messagesRef.doc(), {
+              role: "model",
+              text: full,
+              createdAt: FieldValue.serverTimestamp(),
+            });
+            batch.set(
+              sessionRef,
+              {
+                ...(isNewSession
+                  ? { title: text.slice(0, 80), summary: "", createdAt: FieldValue.serverTimestamp() }
+                  : {}),
+                updatedAt: FieldValue.serverTimestamp(),
+                messageCount: FieldValue.increment(2),
+              },
+              { merge: true },
+            );
+            await batch.commit();
+          } catch (err) {
+            console.error("/api/chat persist failed:", err instanceof Error ? err.message : err);
+            send({ error: "The reply was generated but saving failed. Please retry later." });
+          }
+        }
+
+        send({ done: true });
+        controller.close();
       },
-      { merge: true },
-    );
-    await batch.commit();
+    });
 
-    return Response.json({ sessionId: sid, reply });
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "application/x-ndjson; charset=utf-8",
+        "Cache-Control": "no-store",
+        // Defeat proxy buffering so deltas arrive the moment they are generated.
+        "X-Accel-Buffering": "no",
+      },
+    });
   } catch (err) {
     // Article 7: generic message out, content-free details to server logs only.
     console.error("/api/chat failed:", err instanceof Error ? err.message : err);

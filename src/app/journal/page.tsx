@@ -1,10 +1,11 @@
 "use client";
 
-// Journal surface. Logic is unchanged from the working harness; this file's
-// presentation follows docs/design-philosophy.md (LAMPLIGHT): ink surfaces,
-// one apricot accent where action lives, violet for focus and the user's own
-// voice, flame-behavior motion, one radius law throughout.
+// Journal surface. Presentation follows docs/design-philosophy.md (LAMPLIGHT):
+// ink surfaces, one apricot accent where action lives, violet for focus and
+// the user's own voice, flame-behavior motion. Replies stream token-by-token
+// over NDJSON so the user reads while Gemini writes.
 import {
+  memo,
   useCallback,
   useEffect,
   useRef,
@@ -15,19 +16,22 @@ import {
 import { useRouter } from "next/navigation";
 import { PaperPlaneTilt, SignOut, Sparkle, Warning } from "@phosphor-icons/react";
 import { collection, getDocs, limit, orderBy, query } from "firebase/firestore";
+import { Markdown } from "@/components/Markdown";
 import { useAuth } from "@/components/AuthProvider";
 import { firebaseClient } from "@/lib/firebase.client";
 
 type ChatMessage = { role: "user" | "model"; text: string };
 
+type WireEvent =
+  | { sid: string }
+  | { t: string }
+  | { error: string }
+  | { done: true };
+
 const SESSION_KEY = "gj.sessionId";
 const MAX_INPUT_CHARS = 8_000;
 
-const SUGGESTIONS = [
-  "Talk through my day",
-  "Untangle a decision",
-  "Brainstorm an idea",
-];
+const SUGGESTIONS = ["Talk through my day", "Untangle a decision", "Brainstorm an idea"];
 
 export default function JournalPage() {
   const { user, loading, signOutUser } = useAuth();
@@ -38,6 +42,7 @@ export default function JournalPage() {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [restoring, setRestoring] = useState(true);
+  const [streamText, setStreamText] = useState<string | null>(null);
 
   const sidRef = useRef<string | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
@@ -95,7 +100,7 @@ export default function JournalPage() {
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages, sending]);
+  }, [messages, sending, streamText]);
 
   const send = useCallback(async () => {
     const text = input.trim();
@@ -106,6 +111,10 @@ export default function JournalPage() {
     setSending(true);
     setMessages((prev) => [...prev, { role: "user", text }]); // optimistic
 
+    // Stream accumulators live here so the catch block can keep partials.
+    let acc = "";
+    let gotSession = false;
+
     try {
       const { auth } = firebaseClient();
       const token = await auth.currentUser?.getIdToken();
@@ -113,22 +122,26 @@ export default function JournalPage() {
 
       const res = await fetch("/api/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
         body: JSON.stringify({ sessionId: sidRef.current ?? undefined, message: text }),
       });
-      // The server can return an empty body (platform timeout/crash), so
-      // never assume JSON — degrade to a human message instead of a
-      // parser error.
-      const raw = await res.text();
-      let data: { reply?: string; sessionId?: string; error?: string } = {};
-      if (raw) {
-        try {
-          data = JSON.parse(raw) as typeof data;
-        } catch {
-          data = {};
+
+      // Failures arrive as plain JSON; success is an NDJSON stream. Never
+      // assume the shape — degrade to a human message, not a parser error.
+      const contentType = res.headers.get("content-type") ?? "";
+      if (!res.ok || !contentType.includes("ndjson")) {
+        const raw = await res.text();
+        let data: { error?: string } = {};
+        if (raw) {
+          try {
+            data = JSON.parse(raw) as { error?: string };
+          } catch {
+            data = {};
+          }
         }
-      }
-      if (!res.ok || !data.reply || !data.sessionId) {
         throw new Error(
           data.error ??
             (res.status >= 500
@@ -136,16 +149,58 @@ export default function JournalPage() {
               : `Request failed (${res.status}).`),
         );
       }
-      sidRef.current = data.sessionId;
-      window.localStorage.setItem(SESSION_KEY, data.sessionId);
-      setMessages((prev) => [...prev, { role: "model", text: data.reply as string }]);
+
+      const reader = res.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let idx: number;
+        while ((idx = buffer.indexOf("\n")) >= 0) {
+          const line = buffer.slice(0, idx).trim();
+          buffer = buffer.slice(idx + 1);
+          if (!line) continue;
+          let evt: WireEvent;
+          try {
+            evt = JSON.parse(line) as WireEvent;
+          } catch {
+            continue; // skip a malformed line instead of dying mid-stream
+          }
+          if ("sid" in evt) {
+            sidRef.current = evt.sid;
+            gotSession = true;
+            window.localStorage.setItem(SESSION_KEY, evt.sid);
+          }
+          if ("t" in evt) {
+            acc += evt.t;
+            setStreamText(acc);
+          }
+          if ("error" in evt) {
+            throw new Error(evt.error);
+          }
+        }
+      }
+
+      if (!gotSession || !acc.trim()) {
+        throw new Error("The assistant returned an empty response. Try rephrasing.");
+      }
+      setMessages((prev) => [...prev, { role: "model", text: acc }]);
     } catch (err) {
-      // Roll back the optimistic bubble so the UI never lies about state.
-      setMessages((prev) =>
-        prev.filter((m, i) => !(i === prev.length - 1 && m.role === "user")),
-      );
+      if (acc.trim()) {
+        // A partial reply survived the failure — keep it visible and honest.
+        setMessages((prev) => [...prev, { role: "model", text: acc }]);
+      } else {
+        // Roll back the optimistic bubble so the UI never lies about state.
+        setMessages((prev) =>
+          prev.filter((m, i) => !(i === prev.length - 1 && m.role === "user")),
+        );
+      }
       setError(err instanceof Error ? err.message : "Something went wrong.");
     } finally {
+      setStreamText(null);
       setSending(false);
     }
   }, [input, sending, user]);
@@ -156,7 +211,7 @@ export default function JournalPage() {
   }
 
   function onKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.key === "Enter" && !event.shiftKey) {
+    if (event.key === "Enter" && !event.shiftKey && !sending) {
       event.preventDefault();
       void send();
     }
@@ -212,7 +267,7 @@ export default function JournalPage() {
 
       <main className="flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-[46rem] px-5 py-10">
-          {messages.length === 0 ? (
+          {messages.length === 0 && streamText === null && !sending ? (
             <div className="rise-in flex min-h-[50dvh] flex-col items-center justify-center text-center">
               <h1 className="max-w-[16ch] font-display text-[2rem] font-semibold leading-[1.08] tracking-tight text-balance text-ink md:text-[2.75rem]">
                 What’s on your mind?
@@ -236,32 +291,26 @@ export default function JournalPage() {
           ) : (
             <div role="log" aria-live="polite" className="flex flex-col gap-5">
               {messages.map((message, i) => (
-                <div
-                  key={i}
-                  style={{ animationDelay: `${Math.min(i, 6) * 40}ms` }}
-                  className={
-                    message.role === "user"
-                      ? "rise-in ml-auto max-w-[82%] whitespace-pre-wrap rounded-[18px] rounded-br-[6px] bg-user px-4 py-3 text-sm leading-6 text-white"
-                      : "rise-in mr-auto max-w-[82%] whitespace-pre-wrap rounded-[18px] rounded-bl-[6px] border border-line bg-surface px-4 py-3 text-sm leading-6 text-ink"
-                  }
-                >
-                  {message.role === "model" ? (
-                    <Sparkle
-                      weight="fill"
-                      size={12}
-                      className="mb-1 mr-1.5 inline-block text-accent"
-                      aria-hidden="true"
-                    />
-                  ) : null}
-                  <span className="break-words">{message.text}</span>
-                </div>
+                <MessageBubble key={i} message={message} delay={Math.min(i, 6) * 40} />
               ))}
-              {sending ? (
+              {sending && streamText === null ? (
                 <div className="mr-auto flex items-center gap-1.5 rounded-[18px] rounded-bl-[6px] border border-line bg-surface px-4 py-3.5">
                   <span className="thinking-dot h-1.5 w-1.5 rounded-full bg-ink-muted" />
                   <span className="thinking-dot h-1.5 w-1.5 rounded-full bg-ink-muted" />
                   <span className="thinking-dot h-1.5 w-1.5 rounded-full bg-ink-muted" />
                   <span className="sr-only">Gemini is thinking</span>
+                </div>
+              ) : null}
+              {streamText !== null ? (
+                <div className="rise-in mr-auto max-w-[82%] rounded-[18px] rounded-bl-[6px] border border-line bg-surface px-4 py-3 text-sm leading-6 text-ink">
+                  <Sparkle
+                    weight="fill"
+                    size={12}
+                    className="mb-1 mr-1.5 inline-block text-accent"
+                    aria-hidden="true"
+                  />
+                  <Markdown text={streamText} />
+                  <span className="stream-caret" aria-hidden="true" />
                 </div>
               ) : null}
             </div>
@@ -323,11 +372,48 @@ export default function JournalPage() {
   );
 }
 
+/* Memoized so per-token stream updates re-render only the growing bubble,
+   not every message in the thread. Markdown renders for BOTH roles: the
+   model writes markdown, and users journal in it too. */
+const MessageBubble = memo(function MessageBubble({
+  message,
+  delay,
+}: {
+  message: ChatMessage;
+  delay: number;
+}) {
+  const isUser = message.role === "user";
+  return (
+    <div
+      style={{ animationDelay: `${delay}ms` }}
+      className={
+        isUser
+          ? "rise-in ml-auto max-w-[82%] rounded-[18px] rounded-br-[6px] bg-user px-4 py-3 text-sm leading-6 text-white"
+          : "rise-in mr-auto max-w-[82%] rounded-[18px] rounded-bl-[6px] border border-line bg-surface px-4 py-3 text-sm leading-6 text-ink"
+      }
+    >
+      {!isUser ? (
+        <Sparkle
+          weight="fill"
+          size={12}
+          className="mb-1 mr-1.5 inline-block text-accent"
+          aria-hidden="true"
+        />
+      ) : null}
+      <Markdown text={message.text} />
+    </div>
+  );
+});
+
 /* Bubble-shaped placeholders matching the thread layout while history
    restores; sheen sweeps instead of a spinner. */
 function JournalSkeleton() {
   return (
-    <div className="flex flex-1 flex-col bg-background" aria-busy="true" aria-label="Loading your journal">
+    <div
+      className="flex flex-1 flex-col bg-background"
+      aria-busy="true"
+      aria-label="Loading your journal"
+    >
       <header className="border-b border-line">
         <div className="mx-auto flex h-16 w-full max-w-[52rem] items-center px-5">
           <p className="font-display text-base font-semibold tracking-tight text-ink">
@@ -337,18 +423,20 @@ function JournalSkeleton() {
       </header>
       <main className="flex-1">
         <div className="mx-auto flex w-full max-w-[46rem] flex-col gap-5 px-5 py-10">
-          {[["ml-auto", "w-2/3"], ["mr-auto", "w-3/4"], ["ml-auto", "w-1/2"]].map(
-            ([align, width], i) => (
-              <div
-                key={i}
-                className={`relative h-12 overflow-hidden rounded-[18px] bg-surface ${align} ${width} ${
-                  align === "ml-auto" ? "rounded-br-[6px]" : "rounded-bl-[6px]"
-                }`}
-              >
-                <span className="sheen absolute inset-0 block" />
-              </div>
-            ),
-          )}
+          {[
+            ["ml-auto", "w-2/3"],
+            ["mr-auto", "w-3/4"],
+            ["ml-auto", "w-1/2"],
+          ].map(([align, width], i) => (
+            <div
+              key={i}
+              className={`relative h-12 overflow-hidden rounded-[18px] bg-surface ${align} ${width} ${
+                align === "ml-auto" ? "rounded-br-[6px]" : "rounded-bl-[6px]"
+              }`}
+            >
+              <span className="sheen absolute inset-0 block" />
+            </div>
+          ))}
         </div>
       </main>
     </div>
