@@ -1,0 +1,85 @@
+rules_version = '2';
+
+// Personal Gemini Journal — per-user data isolation.
+//
+// Data model: each user owns exactly one subtree, /users/{uid}/...
+// Everything not matched below is denied, present and future.
+//
+// IMPORTANT: the Admin SDK used by /api/chat bypasses these rules
+// entirely, so the server re-enforces the same boundary in code —
+// the uid always comes from the *verified* ID token, never from the
+// request body.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Caller is signed in and is navigating their own subtree.
+    function isOwner(uid) {
+      return request.auth != null && request.auth.uid == uid;
+    }
+
+    // ---------------------------------------------------------------
+    // Baseline: deny all. Any collection not matched below is
+    // unreadable and unwritable by clients.
+    // ---------------------------------------------------------------
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ---------------------------------------------------------------
+    // User profile: /users/{uid}
+    // ---------------------------------------------------------------
+    match /users/{uid} {
+      allow get, list: if isOwner(uid);
+
+      // createdAt must be a server timestamp on create (serverTimestamp()).
+      allow create: if isOwner(uid)
+        && request.resource.data.keys().hasOnly(['displayName', 'email', 'photoURL', 'createdAt'])
+        && request.resource.data.createdAt == request.time;
+
+      allow update: if isOwner(uid)
+        && request.resource.data.keys().hasOnly(['displayName', 'email', 'photoURL', 'createdAt']);
+
+      // Account deletion goes through the backend, not the client.
+      allow delete: if false;
+
+      // -------------------------------------------------------------
+      // Journal session metadata: /users/{uid}/sessions/{sessionId}
+      // Fields: title, rolling summary, counters, timestamps.
+      // -------------------------------------------------------------
+      match /sessions/{sessionId} {
+        function validSession() {
+          return request.resource.data.keys()
+            .hasOnly(['title', 'summary', 'messageCount', 'createdAt', 'updatedAt']);
+        }
+
+        allow read: if isOwner(uid);
+        allow create, update: if isOwner(uid) && validSession();
+        allow delete: if isOwner(uid);
+
+        // -----------------------------------------------------------
+        // Messages: /users/{uid}/sessions/{sessionId}/messages/{msgId}
+        // -----------------------------------------------------------
+        match /messages/{messageId} {
+          function validMessage() {
+            return request.resource.data.keys().hasOnly(['role', 'text', 'createdAt'])
+              && request.resource.data.role in ['user', 'model']
+              && request.resource.data.text is string
+              && request.resource.data.text.size() > 0
+              && request.resource.data.text.size() <= 20000
+              && request.resource.data.createdAt == request.time;
+          }
+
+          allow read: if isOwner(uid);
+          // Client writes its own messages (role must be 'user' per the
+          // schema above); the server writes the 'model' replies via the
+          // Admin SDK, which skips these rules by design.
+          allow create: if isOwner(uid) && validMessage();
+          // Messages are immutable once written — edits would falsify
+          // the record of what the model actually saw.
+          allow update: if false;
+          allow delete: if isOwner(uid);
+        }
+      }
+    }
+  }
+}
