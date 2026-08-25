@@ -116,9 +116,25 @@ export default function JournalPage() {
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({ sessionId: sidRef.current ?? undefined, message: text }),
       });
-      const data = (await res.json()) as { reply?: string; sessionId?: string; error?: string };
+      // The server can return an empty body (platform timeout/crash), so
+      // never assume JSON — degrade to a human message instead of a
+      // parser error.
+      const raw = await res.text();
+      let data: { reply?: string; sessionId?: string; error?: string } = {};
+      if (raw) {
+        try {
+          data = JSON.parse(raw) as typeof data;
+        } catch {
+          data = {};
+        }
+      }
       if (!res.ok || !data.reply || !data.sessionId) {
-        throw new Error(data.error ?? `Request failed (${res.status}).`);
+        throw new Error(
+          data.error ??
+            (res.status >= 500
+              ? "The journaling assistant is taking longer than expected. Try again in a moment."
+              : `Request failed (${res.status}).`),
+        );
       }
       sidRef.current = data.sessionId;
       window.localStorage.setItem(SESSION_KEY, data.sessionId);

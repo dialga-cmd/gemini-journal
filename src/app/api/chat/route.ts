@@ -20,6 +20,11 @@ import { allowRequest } from "@/lib/rate-limit.server";
 // firebase-admin requires Node APIs — never run this route on the edge runtime.
 export const runtime = "nodejs";
 
+// The route verifies a token, reads history, and waits on a Gemini
+// generation. Hosted platforms default to ~10s function limits, which a
+// cold start plus model latency can exceed; claim the headroom explicitly.
+export const maxDuration = 60;
+
 const MAX_INPUT_CHARS = 8_000;
 const MAX_REPLY_CHARS = 20_000;
 const HISTORY_TURNS = 24;
