@@ -71,6 +71,44 @@ users/{uid}/sessions/{sid}/messages/{id} role ('user' | 'model'), text, createdA
    `npx firebase deploy --only firestore:rules`
 4. **Run**: `npm run dev` → sign in with Google → journal.
 
+## Deploy to Cloud Run
+
+The Gemini key is stored in **Secret Manager** and injected at instance start
+via `--set-secrets` — it never lives in the repo, the image, or the client
+bundle. Firebase Admin uses Application Default Credentials from the runtime
+service account (no key file ships). Local dev keeps using `.env.local`.
+
+```bash
+# 0. One-time: attach billing to the project (required for Cloud Run),
+#    then enable the APIs the deploy touches:
+gcloud services enable run.googleapis.com cloudbuild.googleapis.com \
+  artifactregistry.googleapis.com secretmanager.googleapis.com
+
+# 1. Store the Gemini key in Secret Manager (paste when prompted):
+printf '%s' 'PASTE_YOUR_AI_STUDIO_KEY' | gcloud secrets create gemini-api-key --data-file=-
+
+# 2. Let the Cloud Run runtime service account read the secret:
+gcloud secrets add-iam-policy-binding gemini-api-key \
+  --member="serviceAccount:PROJECT_NUMBER-compute@developer.gserviceaccount.com" \
+  --role="roles/secretmanager.secretAccessor"
+
+# 3. Deploy (build runs remotely; NEXT_PUBLIC_* config is public-by-design
+#    and must exist at BUILD time because it is compiled into the bundle):
+gcloud run deploy gemini-journal \
+  --source . \
+  --region us-central1 \
+  --allow-unauthenticated \
+  --set-build-env-vars "NEXT_PUBLIC_FIREBASE_API_KEY=...,NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=...,NEXT_PUBLIC_FIREBASE_PROJECT_ID=...,NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=...,NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=...,NEXT_PUBLIC_FIREBASE_APP_ID=..." \
+  --set-env-vars "GOOGLE_CLOUD_PROJECT=$(gcloud config get-value project),GEMINI_MODEL=gemini-3.5-flash-lite" \
+  --set-secrets "GEMINI_API_KEY=gemini-api-key:latest"
+```
+
+Post-deploy: add the `*.run.app` URL under **Firebase console → Authentication
+→ Settings → Authorized domains** (Google sign-in refuses unknown domains),
+then sign in on the public URL and send a test entry. Set a **$5 budget
+alert** in the billing console. Free tier covers this workload comfortably;
+delete stale images in Artifact Registry before submitting.
+
 ## Free-tier notes
 
 - `GEMINI_MODEL` defaults to `gemini-3.5-flash-lite` (cheapest tier callable

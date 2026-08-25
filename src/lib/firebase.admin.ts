@@ -21,25 +21,30 @@ let adminApp: App | null = null;
 function app(): App {
   if (adminApp) return adminApp;
 
-  const keyPath = resolve(
-    process.cwd(),
-    process.env.FIREBASE_SERVICE_ACCOUNT_PATH ?? "service-key.json",
-  );
+  const keyPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH?.trim();
 
-  let serviceAccount: ServiceAccount;
-  try {
-    // turbopackIgnore keeps the credential file out of deploy-time tracing
-    // (the path only exists at runtime; nothing here should be bundled).
-    serviceAccount = JSON.parse(
-      readFileSync(/* turbopackIgnore: true */ keyPath, "utf8"),
-    ) as ServiceAccount;
-  } catch {
-    throw new Error(
-      `Firebase Admin credentials unreadable at ${keyPath} — save your service-account JSON there or set FIREBASE_SERVICE_ACCOUNT_PATH in .env.local.`,
-    );
+  if (keyPath) {
+    // Local development: explicit service-account JSON (gitignored).
+    const abs = resolve(process.cwd(), keyPath);
+    let serviceAccount: ServiceAccount;
+    try {
+      // turbopackIgnore keeps the credential file out of deploy-time tracing
+      // (the path only exists at runtime; nothing here should be bundled).
+      serviceAccount = JSON.parse(
+        readFileSync(/* turbopackIgnore: true */ abs, "utf8"),
+      ) as ServiceAccount;
+    } catch {
+      throw new Error(
+        `Firebase Admin credentials unreadable at ${abs} — save your service-account JSON there or set FIREBASE_SERVICE_ACCOUNT_PATH in .env.local.`,
+      );
+    }
+    adminApp = getApps()[0] ?? initializeApp({ credential: cert(serviceAccount) });
+  } else {
+    // Deployed (Cloud Run, etc.): Application Default Credentials from the
+    // runtime service account. No key file ever ships with the container —
+    // the platform injects identity, Article 2 holds by construction.
+    adminApp = getApps()[0] ?? initializeApp();
   }
-
-  adminApp = getApps()[0] ?? initializeApp({ credential: cert(serviceAccount) });
   return adminApp;
 }
 

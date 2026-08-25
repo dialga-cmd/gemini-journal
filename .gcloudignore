@@ -1,0 +1,13 @@
+# Uploaded to Cloud Build on `gcloud run deploy --source`. Keep credentials
+# and local state out of the container build by construction (Article 2).
+.git
+node_modules/
+.next/
+.env.local
+.env*.local
+service-key.json
+secrets/
+*.pem
+firebase-debug.log*
+ui-debug.log*
+.claude/
