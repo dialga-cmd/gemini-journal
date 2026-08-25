@@ -31,9 +31,13 @@ export default function LoginPage() {
           ? "The sign-in window closed before finishing."
           : code === "auth/popup-blocked"
             ? "Your browser blocked the sign-in popup. Allow popups for this site and try again."
-            : code === "auth/operation-not-allowed" || code === "auth/configuration-not-found"
-              ? "The Google provider is not enabled yet. Turn it on in Firebase console, Authentication, Sign-in method."
-              : "Sign-in failed. Please try again.",
+            : code === "auth/unauthorized-domain"
+              ? "This domain is not authorized for sign-in yet. Add it in Firebase console, Authentication, Settings, Authorized domains."
+              : code === "auth/operation-not-allowed" || code === "auth/configuration-not-found"
+                ? "The Google provider is not enabled yet. Turn it on in Firebase console, Authentication, Sign-in method."
+                : code
+                  ? `Sign-in failed (${code}). Please try again.`
+                  : "Sign-in failed. Please try again.",
       );
       setBusy(false);
     }
